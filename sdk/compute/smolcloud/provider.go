@@ -304,6 +304,9 @@ func (p *provider) startRecovered(ctx context.Context, id string) error {
 	if state.State == "started" || state.State == "running" {
 		return p.waitReady(ctx, id)
 	}
+	if state.State == "paused" {
+		return p.Resume(ctx, &compute.ProviderStatus{InstanceID: id})
+	}
 	return p.start(ctx, id)
 }
 

@@ -71,6 +71,14 @@ func TestCloudLiveCheckpointResume(t *testing.T) {
 	if err := p.Suspend(ctx, original); err != nil {
 		t.Fatalf("live pause: %v", err)
 	}
+	// Temporal may retry Start after a pause; recovery must resume the same VM.
+	recovered, err := p.Start(ctx, queue)
+	if err != nil || recovered == nil || recovered.InstanceID != original.InstanceID {
+		t.Fatalf("live retry after pause: recovered=%v err=%v", recovered, err)
+	}
+	if err := p.Suspend(ctx, original); err != nil {
+		t.Fatalf("live second pause: %v", err)
+	}
 	if err := p.Resume(ctx, original); err != nil {
 		t.Fatalf("live resume: %v", err)
 	}

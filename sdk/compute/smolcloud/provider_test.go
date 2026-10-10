@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
@@ -190,6 +191,48 @@ func TestRetryRecoversOnlyOwnedMachine(t *testing.T) {
 	status, err := instance.Start(context.Background(), "queue-1")
 	if err != nil || status.InstanceID != "owned" || created != 1 {
 		t.Fatalf("retry recovery: %v %v created %d", status, err, created)
+	}
+}
+
+func TestRetryResumesPausedOwnedMachine(t *testing.T) {
+	t.Setenv("SMOL_CLOUD_TOKEN", "test-token")
+	name, err := machineName("queue-paused", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/machines":
+			w.WriteHeader(http.StatusConflict)
+		case "GET /v1/machines":
+			fmt.Fprintf(w, `{"machines":[{"id":"paused-owned","name":%q,"labels":{"temporal-harness":"smol-cloud"},"network":{"mode":"blocked"}}]}`, name)
+		case "GET /v1/machines/paused-owned":
+			if resumed {
+				fmt.Fprint(w, `{"state":"started","ready":true}`)
+			} else {
+				fmt.Fprint(w, `{"state":"paused","ready":false}`)
+			}
+		case "POST /v1/machines/paused-owned/resume":
+			resumed = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.String())
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("SMOL_CLOUD_URL", server.URL)
+	instance, err := New(map[string]string{"image": "alpine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	status, err := instance.Start(ctx, "queue-paused")
+	if err != nil || status == nil || status.InstanceID != "paused-owned" || !resumed {
+		t.Fatalf("retry must resume paused owned VM: status=%v err=%v resumed=%t", status, err, resumed)
 	}
 }
 
