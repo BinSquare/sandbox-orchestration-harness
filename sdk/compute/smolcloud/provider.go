@@ -74,7 +74,17 @@ func New(config map[string]string) (compute.Provider, error) {
 	if os.Getenv("SMOL_CLOUD_TOKEN") == "" {
 		return nil, fmt.Errorf("smol-cloud: set SMOL_CLOUD_TOKEN on the activity worker")
 	}
-	p := &provider{baseURL: strings.TrimRight(base, "/"), token: os.Getenv("SMOL_CLOUD_TOKEN"), image: image, network: network, cidrs: cidrs, hosts: hosts, cpus: 1, memoryMB: 512, client: &http.Client{}}
+	p := &provider{
+	    baseURL: strings.TrimRight(base, "/"),
+	    token: os.Getenv("SMOL_CLOUD_TOKEN"),
+	    image: image,
+	    network: network,
+	    cidrs: cidrs,
+	    hosts: hosts,
+	    cpus: 1,
+	    memoryMB: 512,
+	    client: &http.Client{},
+	}
 	for key, dst := range map[string]*int{"cpus": &p.cpus, "memory-mb": &p.memoryMB, "disk-gb": &p.diskGB} {
 		if config[key] != "" {
 			v, err := strconv.Atoi(config[key])
