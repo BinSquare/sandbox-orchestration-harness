@@ -130,10 +130,7 @@ func (p *provider) Start(ctx context.Context, taskQueueName string) (*compute.Pr
 	if p.diskGB != 0 {
 		resources["diskGb"] = p.diskGB
 	}
-	var created struct {
-		ID      string        `json:"id"`
-		Network networkPolicy `json:"network"`
-	}
+	var created createdMachine
 	err = p.request(ctx, http.MethodPost, "/v1/machines", map[string]any{
 		"name":       name,
 		"source":     map[string]string{"type": "image", "reference": p.image},
@@ -143,33 +140,7 @@ func (p *provider) Start(ctx context.Context, taskQueueName string) (*compute.Pr
 		"env":        map[string]string{"TEMPORAL_TASK_QUEUE": taskQueueName},
 		"labels":     map[string]string{"temporal-harness": "smol-cloud"},
 	}, &created)
-	recovered := isStatus(err, http.StatusConflict)
-	if recovered {
-		created.ID, created.Network, err = p.findOwned(ctx, name)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("smol-cloud: create: %w", err)
-	}
-	if created.ID == "" {
-		return nil, fmt.Errorf("smol-cloud: create returned no machine id")
-	}
-	if !p.sameNetwork(created.Network) {
-		if !recovered {
-			p.cleanup(created.ID)
-		}
-		return nil, fmt.Errorf("smol-cloud: created machine network policy differs from requested policy")
-	}
-	start := p.start
-	if recovered {
-		start = p.startRecovered
-	}
-	if err := start(ctx, created.ID); err != nil {
-		if !recovered {
-			p.cleanup(created.ID)
-		}
-		return nil, err
-	}
-	return &compute.ProviderStatus{InstanceID: created.ID}, nil
+	return p.adopt(ctx, name, "create", "created", created, err)
 }
 
 func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) error {
@@ -229,38 +200,9 @@ func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, 
 	if err != nil {
 		return nil, err
 	}
-	var created struct {
-		ID      string        `json:"id"`
-		Network networkPolicy `json:"network"`
-	}
+	var created createdMachine
 	err = p.request(ctx, http.MethodPost, "/v1/checkpoints/"+url.PathEscape(snapshot.SnapshotID)+"/restore", map[string]any{"name": name, "network": p.networkPolicy()}, &created)
-	recovered := isStatus(err, http.StatusConflict)
-	if recovered {
-		created.ID, created.Network, err = p.findOwned(ctx, name)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("smol-cloud: restore: %w", err)
-	}
-	if created.ID == "" {
-		return nil, fmt.Errorf("smol-cloud: restore returned no machine id")
-	}
-	if !p.sameNetwork(created.Network) {
-		if !recovered {
-			p.cleanup(created.ID)
-		}
-		return nil, fmt.Errorf("smol-cloud: restored machine network policy differs from requested policy")
-	}
-	start := p.start
-	if recovered {
-		start = p.startRecovered
-	}
-	if err := start(ctx, created.ID); err != nil {
-		if !recovered {
-			p.cleanup(created.ID)
-		}
-		return nil, err
-	}
-	return &compute.ProviderStatus{InstanceID: created.ID}, nil
+	return p.adopt(ctx, name, "restore", "restored", created, err)
 }
 
 func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.ProviderSnapshot) error {
@@ -303,6 +245,44 @@ func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderS
 	return &compute.CommandResult{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: result.ExitCode}, nil
 }
 
+type createdMachine struct {
+	ID      string        `json:"id"`
+	Network networkPolicy `json:"network"`
+}
+
+// adopt finishes a create or restore. On a 409 it attaches to the machine an
+// earlier attempt of this activity created, then checks its network policy and
+// starts it. A machine this attempt created is deleted if either step fails.
+func (p *provider) adopt(ctx context.Context, name, op, past string, created createdMachine, err error) (*compute.ProviderStatus, error) {
+	recovered := isStatus(err, http.StatusConflict)
+	if recovered {
+		created.ID, created.Network, err = p.findOwned(ctx, name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("smol-cloud: %s: %w", op, err)
+	}
+	if created.ID == "" {
+		return nil, fmt.Errorf("smol-cloud: %s returned no machine id", op)
+	}
+	if !p.sameNetwork(created.Network) {
+		if !recovered {
+			p.cleanup(created.ID)
+		}
+		return nil, fmt.Errorf("smol-cloud: %s machine network policy differs from requested policy", past)
+	}
+	start := p.start
+	if recovered {
+		start = p.startRecovered
+	}
+	if err := start(ctx, created.ID); err != nil {
+		if !recovered {
+			p.cleanup(created.ID)
+		}
+		return nil, err
+	}
+	return &compute.ProviderStatus{InstanceID: created.ID}, nil
+}
+
 // An activity retry can encounter the VM started by its previous attempt.
 func (p *provider) startRecovered(ctx context.Context, id string) error {
 	var state struct {
@@ -330,26 +310,13 @@ func (p *provider) start(ctx context.Context, id string) error {
 // findOwned recovers an already-created VM after Temporal retries an activity.
 // Never attach to a machine merely because a human assigned the same name.
 func (p *provider) findOwned(ctx context.Context, name string) (string, networkPolicy, error) {
-	var payload json.RawMessage
-	if err := p.request(ctx, http.MethodGet, "/v1/machines", nil, &payload); err != nil {
-		return "", networkPolicy{}, err
-	}
-	type record struct {
+	var rows []struct {
 		ID      string            `json:"id"`
 		Name    string            `json:"name"`
 		Labels  map[string]string `json:"labels"`
 		Network networkPolicy     `json:"network"`
 	}
-	var rows []record
-	if len(payload) > 0 && payload[0] == '{' {
-		var envelope struct {
-			Machines []record `json:"machines"`
-		}
-		if err := json.Unmarshal(payload, &envelope); err != nil {
-			return "", networkPolicy{}, err
-		}
-		rows = envelope.Machines
-	} else if err := json.Unmarshal(payload, &rows); err != nil {
+	if err := p.request(ctx, http.MethodGet, "/v1/machines", nil, &rows); err != nil {
 		return "", networkPolicy{}, err
 	}
 	for _, machine := range rows {

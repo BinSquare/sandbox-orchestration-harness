@@ -175,7 +175,7 @@ func TestRetryRecoversOnlyOwnedMachine(t *testing.T) {
 			w.WriteHeader(http.StatusConflict)
 		case "GET /v1/machines":
 			name, _ := machineName("queue-1", "")
-			fmt.Fprintf(w, `{"machines":[{"id":"foreign","name":%q,"labels":{},"network":{"mode":"blocked"}},{"id":"owned","name":%q,"labels":{"temporal-harness":"smol-cloud"},"network":{"mode":"blocked"}}]}`, name, name)
+			fmt.Fprintf(w, `[{"id":"foreign","name":%q,"labels":{},"network":{"mode":"blocked"}},{"id":"owned","name":%q,"labels":{"temporal-harness":"smol-cloud"},"network":{"mode":"blocked"}}]`, name, name)
 		case "GET /v1/machines/owned":
 			fmt.Fprint(w, `{"state":"started","ready":true}`)
 		default:
@@ -207,7 +207,7 @@ func TestRetryResumesPausedOwnedMachine(t *testing.T) {
 		case "POST /v1/machines":
 			w.WriteHeader(http.StatusConflict)
 		case "GET /v1/machines":
-			fmt.Fprintf(w, `{"machines":[{"id":"paused-owned","name":%q,"labels":{"temporal-harness":"smol-cloud"},"network":{"mode":"blocked"}}]}`, name)
+			fmt.Fprintf(w, `[{"id":"paused-owned","name":%q,"labels":{"temporal-harness":"smol-cloud"},"network":{"mode":"blocked"}}]`, name)
 		case "GET /v1/machines/paused-owned":
 			if resumed {
 				fmt.Fprint(w, `{"state":"started","ready":true}`)
@@ -344,7 +344,7 @@ func TestRecoveredStartFailureKeepsExistingMachine(t *testing.T) {
 			w.WriteHeader(http.StatusConflict)
 		case "GET /v1/machines":
 			name, _ := machineName("queue", "")
-			fmt.Fprintf(w, `{"machines":[{"id":"owned","name":%q,"labels":{"temporal-harness":"smol-cloud"},"network":{"mode":"blocked"}}]}`, name)
+			fmt.Fprintf(w, `[{"id":"owned","name":%q,"labels":{"temporal-harness":"smol-cloud"},"network":{"mode":"blocked"}}]`, name)
 		case "GET /v1/machines/owned":
 			w.WriteHeader(http.StatusInternalServerError)
 		case "DELETE /v1/machines/owned":
